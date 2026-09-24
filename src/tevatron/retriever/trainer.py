@@ -44,7 +44,7 @@ class TevatronTrainer(Trainer):
         # Good practice: save your training arguments together with the trained model
         torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
 
-    def _from_checkpoint(self, resume_from_checkpoint: str, model=None) -> None:
+    def _load_from_checkpoint(self, resume_from_checkpoint: str, model=None) -> None:
         # _save() strips `encoder.`, however `Trainer`'s default loader feed the keys
         # back to `EncoderModel`, which keys are `encoder.*`
 
