@@ -25,16 +25,7 @@ from tevatron.retriever.modeling import EncoderOutput, DenseModel
 logger = logging.getLogger(__name__)
 
 
-def main():
-    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-        model_args: ModelArguments
-        data_args: DataArguments
-        training_args: TrainingArguments
-
+def main(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments):
     if training_args.local_rank > 0 or training_args.n_gpu > 1:
         raise NotImplementedError('Multi-GPU encoding is not supported.')
 
@@ -119,4 +110,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+    else:
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args: ModelArguments
+        data_args: DataArguments
+        training_args: TrainingArguments
+
+    main(model_args, data_args, training_args)

@@ -1,17 +1,33 @@
-import random
+import logging
 import os
+import random
 from typing import List, Tuple
 
-from datasets import load_dataset, load_from_disk
-from torch.utils.data import Dataset
+from datasets import DatasetDict, load_dataset, load_from_disk
 from PIL import Image
+from torch.utils.data import Dataset
+from tqdm import tqdm
 
 from tevatron.retriever.arguments import DataArguments
 
-import logging
-from tqdm import tqdm
-
 logger = logging.getLogger(__name__)
+
+
+def load_tevatron_dataset(name, config=None, data_files=None, split=None, cache_dir=None, num_proc=None, **kwargs):
+    """Load a dataset, supporting local `save_to_disk` directories in addition to `load_dataset`.
+
+    A local directory (or `name`/<config> when config names a subdirectory) containing
+    `dataset_dict.json` or `state.json` is loaded with `load_from_disk`; anything else
+    falls back to `load_dataset`.
+    """
+    path = os.path.join(name, config) if config and os.path.isdir(os.path.join(name, config)) else name
+    if os.path.isdir(path) and (
+        os.path.isfile(os.path.join(path, "dataset_dict.json"))
+        or os.path.isfile(os.path.join(path, "state.json"))
+    ):
+        dataset = load_from_disk(path)
+        return dataset[split] if split and isinstance(dataset, DatasetDict) else dataset
+    return load_dataset(name, config, data_files=data_files, split=split, cache_dir=cache_dir, num_proc=num_proc, **kwargs)
 
 
 class TrainDataset(Dataset):
@@ -32,9 +48,9 @@ class TrainDataset(Dataset):
         self.trainer = trainer
 
         # Load training data
-        self.train_data = load_dataset(
+        self.train_data = load_tevatron_dataset(
             self.data_args.dataset_name if dataset_name is None else dataset_name,
-            self.data_args.dataset_config,
+            config=self.data_args.dataset_config,
             data_files=self.data_args.dataset_path if dataset_path is None else dataset_path,
             split=self.data_args.dataset_split,
             cache_dir=self.data_args.dataset_cache_dir,
@@ -45,9 +61,9 @@ class TrainDataset(Dataset):
         if self.data_args.corpus_name is None and corpus_name is None:
             self.corpus = None
         else:
-            self.corpus = load_dataset(
+            self.corpus = load_tevatron_dataset(
                 self.data_args.corpus_name if corpus_name is None else corpus_name,
-                self.data_args.corpus_config,
+                config=self.data_args.corpus_config,
                 data_files=self.data_args.corpus_path if corpus_path is None else corpus_path,
                 split=self.data_args.corpus_split,
                 cache_dir=self.data_args.dataset_cache_dir,
@@ -264,9 +280,9 @@ class EncodeDataset(Dataset):
 
     def __init__(self, data_args: DataArguments):
         self.data_args = data_args
-        self.encode_data = load_dataset(
+        self.encode_data = load_tevatron_dataset(
             self.data_args.dataset_name,
-            self.data_args.dataset_config,
+            config=self.data_args.dataset_config,
             data_files=self.data_args.dataset_path,
             split=self.data_args.dataset_split,
             cache_dir=self.data_args.dataset_cache_dir,
