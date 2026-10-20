@@ -17,6 +17,10 @@ You also need a .json mapper file that maps each subset of dev queries into thei
     }
 ]
 
+Also writes `<output_dir>/<name>.qrels.json` ({query_id: {assigned_docid: rel}}),
+matching tevatron.eval.metrics.score's qrels input. Relevance is graded when the
+dev passages carry a `score` field, binary otherwise.
+
 Usage:
     python -m python -m tevatron.utils.build_dev_corpus --model_name_or_path=intfloat/e5-base-unsupervised \
         --query_max_len=512 --passage_max_length=512 --per_device_eval_batch_size=512 --attn_implementation sdpa \
@@ -179,39 +183,64 @@ def search_dataset(
 
     return output_dir
 
+def passage_key(p: dict) -> str:
+    return (p.get("title") or "") + " " + p["text"]
+
+
+def build_qrels(dev_data: TrainDataset, assigned_map: dict) -> dict:
+    """qrels: {query_id: {assigned_docid: relevance}}.
+
+    Relevance is graded when passages carry a `score` field (e.g. distillation
+    datasets), binary 1 otherwise. Pytrec treats rel > 0 as relevant for
+    recall/map/precision; NDCG uses the grades.
+    """
+    qrels = {}
+    for row in dev_data.train_data:
+        # rows may repeat a query_id with different positives (RLHN case)
+        # so we merge isntead of overwriting
+        rels = qrels.setdefault(str(row["query_id"]), {})
+        for p in row["positive_passages"]:
+            rel = float(p["score"]) if "score" in p else 1
+            pid = assigned_map[passage_key(p)]
+            rels[pid] = max(rels.get(pid, rel), rel)
+    return {qid: rels for qid, rels in qrels.items() if rels}
+
 
 def build_dev_corpus(
     dataset: DatasetOutput, docs: np.ndarray, data_args: DataArguments
 ):
     # Get corpus for fetching actual text
     corpus = EncodeDataset(dataset.get_corpus_data_args(data_args, 0, 1))
-    docs_set = set(docs)
+    docs_set = {str(d) for d in docs}
 
     # Get dev data for neg/pos training passages
     dev_data = TrainDataset(dataset.get_query_data_args(data_args))
-    dev_passages = {
-        text["title"] + " " + text["text"]
-        for row in dev_data.train_data.select_columns(
-            ["positive_passages", "negative_passages"]
-        )
-        for text in row["positive_passages"] + row["negative_passages"]
-    }
+    dev_texts = sorted(
+        {
+            passage_key(p)
+            for row in dev_data.train_data.select_columns(
+                ["positive_passages", "negative_passages"]
+            )
+            for p in row["positive_passages"] + row["negative_passages"]
+        }
+    )
 
+    assigned_map = {text: f"assigned-{i}" for i, text in enumerate(dev_texts)}
+
+    # Get remaining as deduplicated docids
     filtered_corpus = corpus.encode_data.filter(
         lambda x: (
-            x["docid"] in docs_set
-            and x["text"]
-            and x["text"] not in dev_passages
-            and x["title"] + " " + x["text"]
+            str(x["docid"]) in docs_set
+            and x["text"] not in assigned_map
+            and passage_key(x) not in assigned_map
         )
     )
 
     # Stitch our own documents
-    dev_passages = list(dev_passages)
     passage_corpus = {
-        "docid": [f"assigned-{i}" for i in range(len(dev_passages))],
-        "title": [""] * len(dev_passages),
-        "text": dev_passages,
+        "docid": list(assigned_map.values()),
+        "title": [""] * len(assigned_map),
+        "text": dev_texts,
     }
 
     augmented_corpus = Dataset.from_dict(passage_corpus)
@@ -221,7 +250,7 @@ def build_dev_corpus(
         f"Picked {len(dev_corpus)} documents, with {len(filtered_corpus)} original documents and {len(augmented_corpus)} augmented documents"
     )
 
-    return dev_corpus
+    return dev_corpus, build_qrels(dev_data, assigned_map)
 
 
 def main(
@@ -251,12 +280,30 @@ def main(
         print(f"Searching {d.name}")
         ranking_file = search_dataset(search_args, output)
 
+        # Extract docids from ranking files
         with open(ranking_file, "rb") as f:
             # docs -> (num_queries x depth)
             _, docs = pickle.load(f)
 
-        dev_corpus = build_dev_corpus(output, np.unique(docs.flatten()), data_args)
+        dev_corpus, qrels = build_dev_corpus(
+            output, np.unique(docs.flatten()), data_args
+        )
         dev_corpus.save_to_disk(Path(training_args.output_dir) / d.name)
+
+        qrels_path = Path(training_args.output_dir) / f"{d.name}.qrels.json"
+        with open(qrels_path, "w") as f:
+            json.dump(qrels, f, indent=2)
+
+        # Quick sanity check
+        corpus_ids = set(dev_corpus["docid"])
+        missing = {
+            pid for rels in qrels.values() for pid in rels if pid not in corpus_ids
+        }
+        assert not missing, (
+            f"qrels reference docs missing from corpus: {sorted(missing)[:5]}"
+        )
+
+        print(f"Wrote {len(qrels)} qrels to {qrels_path}")
 
 
 def parse_dev_corpus_args():
