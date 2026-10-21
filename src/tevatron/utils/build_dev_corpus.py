@@ -134,7 +134,9 @@ def encode_worker(
 
     print(data_args)
 
-    main_encode(model_args, data_args, training_args)
+    main_encode(
+        model_args, data_args, training_args, device=torch.device("cuda", rank)
+    )
 
 
 def encode_dataset(

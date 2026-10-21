@@ -25,8 +25,9 @@ from tevatron.retriever.modeling import EncoderOutput, DenseModel
 logger = logging.getLogger(__name__)
 
 
-def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingArguments):
+def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingArguments, device=None):
     """Encode EncodeDataset(data_args) in-memory; returns (reps, lookup_ids)."""
+    device = device if device is not None else training_args.device
     encode_dataset = EncodeDataset(
         data_args=data_args,
     )
@@ -46,7 +47,7 @@ def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingAr
     )
     encoded = []
     lookup_indices = []
-    model = model.to(training_args.device)
+    model = model.to(device)
     model.eval()
 
     for (batch_ids, batch) in tqdm(encode_loader):
@@ -54,7 +55,7 @@ def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingAr
         with torch.amp.autocast('cuda') if training_args.fp16 or training_args.bf16 else nullcontext():
             with torch.no_grad():
                 for k, v in batch.items():
-                    batch[k] = v.to(training_args.device)
+                    batch[k] = v.to(device)
                 if data_args.encode_is_query:
                     model_output: EncoderOutput = model(query=batch)
                     encoded.append(model_output.q_reps.cpu().detach().numpy())
@@ -65,8 +66,8 @@ def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingAr
     return np.concatenate(encoded), lookup_indices
 
 
-def main(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments):
-    if training_args.local_rank > 0 or training_args.n_gpu > 1:
+def main(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments, device=None):
+    if device is None and (training_args.local_rank > 0 or training_args.n_gpu > 1):
         raise NotImplementedError('Multi-GPU encoding is not supported.')
 
     if data_args.encode_output_path:
@@ -109,7 +110,7 @@ def main(model_args: ModelArguments, data_args: DataArguments, training_args: Tr
         attn_implementation=model_args.attn_implementation,
     )
 
-    encoded, lookup_indices = encode(model, tokenizer, data_args, training_args)
+    encoded, lookup_indices = encode(model, tokenizer, data_args, training_args, device=device)
 
     if data_args.encode_output_path:
         with open(data_args.encode_output_path, 'wb') as f:
