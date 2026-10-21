@@ -25,11 +25,52 @@ from tevatron.retriever.modeling import EncoderOutput, DenseModel
 logger = logging.getLogger(__name__)
 
 
+def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingArguments):
+    """Encode EncodeDataset(data_args) in-memory; returns (reps, lookup_ids)."""
+    encode_dataset = EncodeDataset(
+        data_args=data_args,
+    )
+
+    encode_collator = EncodeCollator(
+        data_args=data_args,
+        tokenizer=tokenizer,
+    )
+
+    encode_loader = DataLoader(
+        encode_dataset,
+        batch_size=training_args.per_device_eval_batch_size,
+        collate_fn=encode_collator,
+        shuffle=False,
+        drop_last=False,
+        num_workers=training_args.dataloader_num_workers,
+    )
+    encoded = []
+    lookup_indices = []
+    model = model.to(training_args.device)
+    model.eval()
+
+    for (batch_ids, batch) in tqdm(encode_loader):
+        lookup_indices.extend(batch_ids)
+        with torch.amp.autocast('cuda') if training_args.fp16 or training_args.bf16 else nullcontext():
+            with torch.no_grad():
+                for k, v in batch.items():
+                    batch[k] = v.to(training_args.device)
+                if data_args.encode_is_query:
+                    model_output: EncoderOutput = model(query=batch)
+                    encoded.append(model_output.q_reps.cpu().detach().numpy())
+                else:
+                    model_output: EncoderOutput = model(passage=batch)
+                    encoded.append(model_output.p_reps.cpu().detach().numpy())
+
+    return np.concatenate(encoded), lookup_indices
+
+
 def main(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments):
     if training_args.local_rank > 0 or training_args.n_gpu > 1:
         raise NotImplementedError('Multi-GPU encoding is not supported.')
 
-    ensure_parent_dir(data_args.encode_output_path)
+    if data_args.encode_output_path:
+        ensure_parent_dir(data_args.encode_output_path)
 
     # Setup logging
     logging.basicConfig(
@@ -68,45 +109,13 @@ def main(model_args: ModelArguments, data_args: DataArguments, training_args: Tr
         attn_implementation=model_args.attn_implementation,
     )
 
-    encode_dataset = EncodeDataset(
-        data_args=data_args,
-    )
+    encoded, lookup_indices = encode(model, tokenizer, data_args, training_args)
 
-    encode_collator = EncodeCollator(
-        data_args=data_args,
-        tokenizer=tokenizer,
-    )
+    if data_args.encode_output_path:
+        with open(data_args.encode_output_path, 'wb') as f:
+            pickle.dump((encoded, lookup_indices), f)
 
-    encode_loader = DataLoader(
-        encode_dataset,
-        batch_size=training_args.per_device_eval_batch_size,
-        collate_fn=encode_collator,
-        shuffle=False,
-        drop_last=False,
-        num_workers=training_args.dataloader_num_workers,
-    )
-    encoded = []
-    lookup_indices = []
-    model = model.to(training_args.device)
-    model.eval()
-
-    for (batch_ids, batch) in tqdm(encode_loader):
-        lookup_indices.extend(batch_ids)
-        with torch.amp.autocast('cuda') if training_args.fp16 or training_args.bf16 else nullcontext():
-            with torch.no_grad():
-                for k, v in batch.items():
-                    batch[k] = v.to(training_args.device)
-                if data_args.encode_is_query:
-                    model_output: EncoderOutput = model(query=batch)
-                    encoded.append(model_output.q_reps.cpu().detach().numpy())
-                else:
-                    model_output: EncoderOutput = model(passage=batch)
-                    encoded.append(model_output.p_reps.cpu().detach().numpy())
-
-    encoded = np.concatenate(encoded)
-
-    with open(data_args.encode_output_path, 'wb') as f:
-        pickle.dump((encoded, lookup_indices), f)
+    return encoded, lookup_indices
 
 
 if __name__ == "__main__":

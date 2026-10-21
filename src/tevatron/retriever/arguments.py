@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
+
 from transformers import TrainingArguments
 
 
@@ -274,4 +275,80 @@ class SpladeTrainingArguments(TevatronTrainingArguments):
     )
     flops_warmup: int = field(
         default=1000, metadata={"help": "steps to quadratically ramp the FLOPS weight from 0 to target"}
+    )
+
+@dataclass
+class ValidateArguments:
+    validate_mode: Optional[str] = field(
+        default='off',
+        metadata={
+            "help": "Evaluation mode for model checkpoints. Can be `off`, `sync` for synchronous evaluation or `command` for achieving `asyncval`-like evaluation",
+            "choices": ["off", "sync", "command"],
+        }
+    )
+
+    eval_query_dir: Optional[str] = field(
+        default=None,
+        metadata = {
+            "help": "Directory containing evaluation queries + qrels"
+        }
+    )
+
+    eval_corpus_dir: Optional[str] = field(
+        default=None,
+        metadata = {
+            "help": "Directory containing evaluation corpus"
+        }
+    )
+
+    validate_output_dir: Optional[str] = field(
+        default=None,
+        metadata = {
+            "help": "Output directory for checkpoint evaluation"
+        }
+    )
+
+    validate_k_values: Optional[List[int]] = field(
+        default=None,
+        metadata = {
+            "help": "k values to compute rank-aware metrics (default: 1 5 10 20 100)"
+        }
+    )
+
+    validate_query_max_len: Optional[int] = field(
+        default=None,
+        metadata = {
+            "help": "Inference max query length (default: training --query_max_len). "
+                    "Train tight, evaluate long."
+        }
+    )
+
+    validate_passage_max_len: Optional[int] = field(
+        default=None,
+        metadata = {
+            "help": "Inference max passage length (default: training --passage_max_len). "
+                    "Train tight, evaluate long."
+        }
+    )
+
+    validate_command: Optional[str] = field(
+        default=None,
+        metadata = {
+            "help": "Command template for `command` mode; {checkpoint}, {step} and {output_dir} are substituted"
+        }
+    )
+
+    validate_checkpoints: Optional[str] = field(
+        default=None,
+        metadata = {
+            "help": "Standalone CLI only: glob of checkpoint dirs (e.g. 'output/checkpoint-*'). "
+                    "Default: evaluate --model_name_or_path alone."
+        }
+    )
+
+    validate_overwrite: bool = field(
+        default=False,
+        metadata = {
+            "help": "Re-evaluate checkpoints that already have metrics written"
+        }
     )

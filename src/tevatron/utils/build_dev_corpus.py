@@ -145,25 +145,21 @@ def encode_dataset(
 ):
     num_proc = torch.cuda.device_count()
 
-    try:
-        print("Encoding Corpus")
-        mp.spawn(
-            fn=encode_worker,
-            args=(num_proc, model_args, data_args, training_args, output, False),
-            nprocs=num_proc,
-            join=True,
-        )
+    print("Encoding Corpus")
+    mp.spawn(
+        fn=encode_worker,
+        args=(num_proc, model_args, data_args, training_args, output, False),
+        nprocs=num_proc,
+        join=True,
+    )
 
-        print("Encoding Queries")
-        mp.spawn(
-            fn=encode_worker,
-            args=(num_proc, model_args, data_args, training_args, output, True),
-            nprocs=num_proc,
-            join=True,
-        )
-
-    except Exception as e:
-        print(f"Fatal error ocurred in a subprocess: \n{e}")
+    print("Encoding Queries")
+    mp.spawn(
+        fn=encode_worker,
+        args=(1, model_args, data_args, training_args, output, True),
+        nprocs=1,
+        join=True,
+    )
 
 
 def search_dataset(

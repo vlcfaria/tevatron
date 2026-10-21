@@ -126,7 +126,9 @@ def save_train_query_dataset(dataset: Dataset, path: str):
 if __name__ == "__main__":
     args = parse_args()
 
-    dataset = load_dataset(args.dataset_name or args.dataset_path)
+    dataset = load_dataset(
+        args.dataset_name or args.dataset_path, name=args.dataset_config
+    )
 
     os.makedirs(args.output_dir, exist_ok=True)
     dev_subset_dir = os.path.join(args.output_dir, "dev/")

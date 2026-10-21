@@ -10,7 +10,7 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 
 from tevatron.retriever.arguments import ModelArguments, DataArguments, \
-    TevatronTrainingArguments as TrainingArguments
+    TevatronTrainingArguments as TrainingArguments, ValidateArguments
 from tevatron.retriever.dataset import TrainDataset
 from tevatron.retriever.collator import TrainCollator
 from tevatron.retriever.modeling import DenseModel
@@ -21,15 +21,16 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, ValidateArguments))
 
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args, validate_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args, validate_args = parser.parse_args_into_dataclasses()
         model_args: ModelArguments
         data_args: DataArguments
         training_args: TrainingArguments
+        validate_args: ValidateArguments
 
     if (
             os.path.exists(training_args.output_dir)
@@ -109,7 +110,14 @@ def main():
         data_collator=collator
     )
     train_dataset.set_trainer(trainer)
-    
+
+    if validate_args.validate_mode != 'off':
+        from tevatron.retriever.driver.validate import ValidateCallback, check_validate_args
+        check_validate_args(validate_args)
+        validate_callback = ValidateCallback(data_args, validate_args, tokenizer)
+        trainer.add_callback(validate_callback)
+        validate_callback.set_trainer(trainer)
+
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
