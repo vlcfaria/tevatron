@@ -2,7 +2,9 @@
 
 The dev corpus is built by indexing the full corpus and sampling the top-k passages from each dev query.
 The passages are then deduplicated, and the positive + hard negatives are also injected into the corpus, building a
-smaller corpus that serves as a proxy for an evaluation set. Such method was proposed by DPR and emphasized with Asyncval
+smaller corpus that serves as a proxy for an evaluation set. Such method was proposed by DPR and emphasized with Asyncval.
+By default, it injects the positive and negative passages into the dev corpus. Pass `--positives_only` to inject only positive 
+passages and let the sampled corpus supply the negatives.
 
 This script assumes a held out dev train dataset. You can extract one with tevatron.utils.sample_dev_queries.py.
 You also need a .json mapper file that maps each subset of dev queries into their respective corpus dataset/config, as such:
@@ -182,7 +184,7 @@ def search_dataset(
     return output_dir
 
 def passage_key(p: dict) -> str:
-    return (p.get("title") or "") + " " + p["text"]
+    return ((p.get("title") or "") + " " + p["text"]).strip()
 
 
 def build_qrels(dev_data: TrainDataset, assigned_map: dict) -> dict:
@@ -205,7 +207,10 @@ def build_qrels(dev_data: TrainDataset, assigned_map: dict) -> dict:
 
 
 def build_dev_corpus(
-    dataset: DatasetOutput, docs: np.ndarray, data_args: DataArguments
+    dataset: DatasetOutput,
+    docs: np.ndarray,
+    data_args: DataArguments,
+    positives_only: bool = False,
 ):
     # Get corpus for fetching actual text
     corpus = EncodeDataset(dataset.get_corpus_data_args(data_args, 0, 1))
@@ -219,7 +224,11 @@ def build_dev_corpus(
             for row in dev_data.train_data.select_columns(
                 ["positive_passages", "negative_passages"]
             )
-            for p in row["positive_passages"] + row["negative_passages"]
+            for p in (
+                row["positive_passages"]
+                if positives_only
+                else row["positive_passages"] + row["negative_passages"]
+            )
         }
     )
 
@@ -258,6 +267,7 @@ def main(
     search_args: Namespace,
     datasets: list[DatasetInfo],
     encoding_cache_dir: str,
+    positives_only: bool = False,
 ):
     num_gpus = torch.cuda.device_count()
     os.makedirs(training_args.output_dir, exist_ok=True)
@@ -284,7 +294,10 @@ def main(
             _, docs = pickle.load(f)
 
         dev_corpus, qrels = build_dev_corpus(
-            output, np.unique(docs.flatten()), data_args
+            output,
+            np.unique(docs.flatten()),
+            data_args,
+            positives_only=positives_only,
         )
         dev_corpus.save_to_disk(Path(training_args.output_dir) / d.name)
 
@@ -309,6 +322,11 @@ def parse_dev_corpus_args():
 
     p.add_argument("--dataset_map", type=str, required=True)
     p.add_argument("--encoding_cache_dir", type=str, required=True)
+    p.add_argument(
+        "--positives_only",
+        action="store_true",
+        help="Inject only positive passages into the dev corpus, skippping sampled negatives.",
+    )
 
     args, _ = p.parse_known_args()
 
@@ -338,4 +356,5 @@ if __name__ == "__main__":
         search_args,
         datasets,
         args.encoding_cache_dir,
+        positives_only=args.positives_only,
     )
