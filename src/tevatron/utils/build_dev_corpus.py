@@ -3,7 +3,7 @@
 The dev corpus is built by indexing the full corpus and sampling the top-k passages from each dev query.
 The passages are then deduplicated, and the positive + hard negatives are also injected into the corpus, building a
 smaller corpus that serves as a proxy for an evaluation set. Such method was proposed by DPR and emphasized with Asyncval.
-By default, it injects the positive and negative passages into the dev corpus. Pass `--positives_only` to inject only positive 
+By default, it injects the positive and negative passages into the dev corpus. Pass `--inject_positives_only` to inject only positive 
 passages and let the sampled corpus supply the negatives.
 
 This script assumes a held out dev train dataset. You can extract one with tevatron.utils.sample_dev_queries.py.
@@ -210,7 +210,7 @@ def build_dev_corpus(
     dataset: DatasetOutput,
     docs: np.ndarray,
     data_args: DataArguments,
-    positives_only: bool = False,
+    inject_positives_only: bool = False,
 ):
     # Get corpus for fetching actual text
     corpus = EncodeDataset(dataset.get_corpus_data_args(data_args, 0, 1))
@@ -226,7 +226,7 @@ def build_dev_corpus(
             )
             for p in (
                 row["positive_passages"]
-                if positives_only
+                if inject_positives_only
                 else row["positive_passages"] + row["negative_passages"]
             )
         }
@@ -267,7 +267,7 @@ def main(
     search_args: Namespace,
     datasets: list[DatasetInfo],
     encoding_cache_dir: str,
-    positives_only: bool = False,
+    inject_positives_only: bool = False,
 ):
     num_gpus = torch.cuda.device_count()
     os.makedirs(training_args.output_dir, exist_ok=True)
@@ -297,7 +297,7 @@ def main(
             output,
             np.unique(docs.flatten()),
             data_args,
-            positives_only=positives_only,
+            inject_positives_only=inject_positives_only,
         )
         dev_corpus.save_to_disk(Path(training_args.output_dir) / d.name)
 
@@ -323,7 +323,7 @@ def parse_dev_corpus_args():
     p.add_argument("--dataset_map", type=str, required=True)
     p.add_argument("--encoding_cache_dir", type=str, required=True)
     p.add_argument(
-        "--positives_only",
+        "--inject_positives_only",
         action="store_true",
         help="Inject only positive passages into the dev corpus, skippping sampled negatives.",
     )
@@ -356,5 +356,5 @@ if __name__ == "__main__":
         search_args,
         datasets,
         args.encoding_cache_dir,
-        positives_only=args.positives_only,
+        inject_positives_only=args.inject_positives_only,
     )
