@@ -53,6 +53,11 @@ from tevatron.retriever.dataset import EncodeDataset, TrainDataset
 from tevatron.retriever.driver.encode import main as main_encode
 from tevatron.retriever.driver.search import get_parser
 from tevatron.retriever.driver.search import main as main_search
+from tevatron.utils.eval.dedup_methods import (
+    DedupConfig,
+    build_resolver,
+    normalize_text,
+)
 
 
 @dataclass
@@ -62,6 +67,7 @@ class DatasetInfo:
     encode_corpus_name: str
     query_corpus_config: str
     query_corpus_name: str
+    dedup: dict | None = None
 
 
 class DatasetOutput:
@@ -147,6 +153,10 @@ def encode_dataset(
     training_args: TrainingArguments,
     output: DatasetOutput,
 ):
+    """ "Encode a corpus dataset and a query datasets
+
+    Splits encoding and shards the corpus dataset among `torch.cuda.device_count()` workers
+    """
     num_proc = torch.cuda.device_count()
 
     print("Encoding Corpus")
@@ -169,7 +179,8 @@ def encode_dataset(
 def search_dataset(
     search_args: Namespace,
     output: DatasetOutput,
-):
+) -> Path:
+    """Searches an encoded dataset. Returns the ranking path"""
     output_dir = output.get_rank_output(search_args.save_text)
 
     if os.path.exists(output_dir):
@@ -183,12 +194,14 @@ def search_dataset(
 
     return output_dir
 
+
 def passage_key(p: dict) -> str:
-    return ((p.get("title") or "") + " " + p["text"]).strip()
+    """Normalize passages with `title` (optional) and `text` fields"""
+    return normalize_text((p.get("title") or "") + " " + p["text"])
 
 
 def build_qrels(dev_data: TrainDataset, assigned_map: dict) -> dict:
-    """qrels: {query_id: {assigned_docid: relevance}}.
+    """Build eval compatible `qrels: {query_id: {assigned_docid: relevance}}`.
 
     Relevance is graded when passages carry a `score` field (e.g. distillation
     datasets), binary 1 otherwise. Pytrec treats rel > 0 as relevant for
@@ -208,13 +221,19 @@ def build_qrels(dev_data: TrainDataset, assigned_map: dict) -> dict:
 
 def build_dev_corpus(
     dataset: DatasetOutput,
-    docs: np.ndarray,
+    retrieved_docs: np.ndarray,
     data_args: DataArguments,
     inject_positives_only: bool = False,
 ):
-    # Get corpus for fetching actual text
+    """Builds the dev corpus from a tevatron corpus dataset and a tevatron training dataset
+
+    This effectivaly adds positive training examples (and negative passages if `inject_positives_only` is true).
+    Since train <-> corpus dataset passages can differ a bit (RLHN x BEIR) case, we apply deduping
+    according to the strategies passed in `dataset.dataset.dedup`.
+    """
+    # Get corpus for fetching actual text in a single shard
     corpus = EncodeDataset(dataset.get_corpus_data_args(data_args, 0, 1))
-    docs_set = {str(d) for d in docs}
+    retrieved_docs_set = {str(d) for d in retrieved_docs}
 
     # Get dev data for neg/pos training passages
     dev_data = TrainDataset(dataset.get_query_data_args(data_args))
@@ -231,19 +250,55 @@ def build_dev_corpus(
             )
         }
     )
-
     assigned_map = {text: f"assigned-{i}" for i, text in enumerate(dev_texts)}
 
-    # Get remaining as deduplicated docids
-    filtered_corpus = corpus.encode_data.filter(
-        lambda x: (
-            str(x["docid"]) in docs_set
-            and x["text"] not in assigned_map
-            and passage_key(x) not in assigned_map
+    resolver = build_resolver(dev_texts, dataset.dataset.dedup)
+    config = resolver.config
+
+    stats = {"corpus": 0, "matched": 0}
+    examples = []
+
+    def keep(x: dict) -> bool:
+        if str(x["docid"]) not in retrieved_docs_set:
+            return False
+        stats["corpus"] += 1
+        match = resolver.match(passage_key(x))
+        if match is None:
+            return True
+        stats["matched"] += 1
+        if len(examples) < 5:
+            examples.append((x["docid"], match))
+        return False
+
+    # Dedup corpus passages from train set
+    filtered_corpus = corpus.encode_data.filter(keep, load_from_cache_file=False)
+
+    # Print stats
+    print(f"[{dataset.dataset.name}] dedup={config.method}/{config.action}")
+    for method in config.methods:
+        print(
+            f"  {method.method}: {resolver.match_counts[method.method]}/"
+            f"{stats['corpus']} corpus docs dropped, "
+            f"{len(resolver.matched_by_method[method.method])}/"
+            f"{len(resolver.dev_texts)} dev passages covered"
         )
+
+    for docid, match in examples:
+        print(
+            f"  {docid} <- dev[{match.dev_index}] "
+            f"{match.method} score={match.score:.3f}"
+        )
+
+    corpus_total = stats["corpus"] or 1
+    dev_total = len(resolver.dev_texts) or 1
+    print(
+        f"  total: {stats['matched']}/{stats['corpus']} corpus docs dropped "
+        f"({stats['matched'] / corpus_total:.1%}), "
+        f"{len(resolver.matched)}/{len(resolver.dev_texts)} dev passages covered "
+        f"({len(resolver.matched) / dev_total:.1%})"
     )
 
-    # Stitch our own documents
+    # Stitch documents from train set, RLHN-style
     passage_corpus = {
         "docid": list(assigned_map.values()),
         "title": [""] * len(assigned_map),
@@ -299,8 +354,8 @@ def main(
             data_args,
             inject_positives_only=inject_positives_only,
         )
-        dev_corpus.save_to_disk(Path(training_args.output_dir) / d.name)
 
+        dev_corpus.save_to_disk(Path(training_args.output_dir) / d.name)
         qrels_path = Path(training_args.output_dir) / f"{d.name}.qrels.json"
         with open(qrels_path, "w") as f:
             json.dump(qrels, f, indent=2)
@@ -333,7 +388,13 @@ def parse_dev_corpus_args():
     with open(args.dataset_map, "r") as f:
         mapper = json.load(f)
 
-    return [DatasetInfo(**val) for val in mapper], args
+    datasets = [DatasetInfo(**val) for val in mapper]
+
+    # Fast-fail
+    for dataset in datasets:
+        DedupConfig.from_dict(dataset.dedup)
+
+    return datasets, args
 
 
 if __name__ == "__main__":

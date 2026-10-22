@@ -36,35 +36,26 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Sample a validation set from a tevatron training dataset."
     )
-
     p.add_argument("--dataset_name", help="HF dataset id e.g. rlhn/rlhn-680K")
-
     p.add_argument(
         "--dataset_config",
         help="HF dataset config, useful for datasets with sub-datasets",
     )
-
     p.add_argument("--dataset_path", help="Path to local data files or directory")
-
     p.add_argument("--dataset_split", default="train", help="Dataset split")
-
     p.add_argument("--seed", default=42, type=int, help="Seed to pick dev queries")
-
     p.add_argument(
         "--num_queries",
         required=True,
         type=float,
         help="Number of dev queries to sample per group if applicable. Passing a float picks a % of each group.",
     )
-
     p.add_argument(
         "--output_dir",
         required=True,
         help="Output directory of dataset split preparation",
     )
-
     p.add_argument("--group_by", choices=["column"], help="Value to group by columns")
-
     p.add_argument("--group_column", help="Column to group by on stratified")
 
     args = p.parse_args()
@@ -84,14 +75,16 @@ def parse_args() -> argparse.Namespace:
 def balance_split_dataset(
     dataset: Dataset, group_column: str, num_queries: float, seed: int
 ) -> dict[str, DatasetDict]:
+    "Splits a dataset, picking `num_queries` per subset. Returns one DatasetDict per subset"
+
     mapper = dataset.features[group_column].int2str
     unique_labels = dataset.unique(group_column)
-
     subsets = {}
 
     for label in unique_labels:
         class_subset = dataset.filter(lambda x: x[group_column] == label)
 
+        # Resolve num_queries
         if not num_queries.is_integer():
             label_num_queries = num_queries * len(class_subset)
         else:
