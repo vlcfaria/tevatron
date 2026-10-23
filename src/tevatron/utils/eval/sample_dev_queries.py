@@ -177,13 +177,12 @@ def balance_split_dataset(
 ) -> dict[str, DatasetDict]:
     "Splits a dataset, picking `num_queries` unique queries per subset."
 
-    mapper = dataset.features[group_column].int2str
     unique_labels = dataset.unique(group_column)
     subsets = {}
 
     for label in unique_labels:
         class_subset = dataset.filter(lambda x: x[group_column] == label)
-        subsets[mapper(label)] = split_by_query_id(
+        subsets[str(label)] = split_by_query_id(
             class_subset, num_queries, seed, group_column=group_column
         )
 
@@ -221,7 +220,6 @@ if __name__ == "__main__":
     train_subset_dir = os.path.join(args.output_dir, "train/")
 
     if args.group_by:
-        dataset = dataset.class_encode_column(args.group_column)
         separated = balance_split_dataset(
             dataset[args.dataset_split], args.group_column, args.num_queries, args.seed
         )
