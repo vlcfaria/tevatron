@@ -1,16 +1,16 @@
-import pickle
-
-import numpy as np
 import glob
-from argparse import ArgumentParser
+import logging
+import pickle
+from argparse import ArgumentParser, Namespace
 from itertools import chain
-from tqdm import tqdm
+
 import faiss
+import numpy as np
+from tqdm import tqdm
 
 from tevatron.retriever.searcher import FaissFlatSearcher
 from tevatron.utils.io import ensure_parent_dir
 
-import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -97,22 +97,25 @@ def pickle_save(obj, path):
     with open(path, 'wb') as f:
         pickle.dump(obj, f)
 
-
-def main():
+def get_parser(require_paths: bool = True) -> ArgumentParser:
     parser = ArgumentParser()
-    parser.add_argument('--query_reps', required=True)
-    parser.add_argument('--passage_reps', required=True)
+
+    if require_paths:
+        parser.add_argument('--query_reps', required=True)
+        parser.add_argument('--passage_reps', required=True)
+        parser.add_argument('--save_ranking_to', required=True)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--depth', type=int, default=1000)
-    parser.add_argument('--save_ranking_to', required=True)
     parser.add_argument('--save_text', action='store_true')
     parser.add_argument('--quiet', action='store_true')
     parser.add_argument('--shard_search', action='store_true')
     parser.add_argument('--gpu_float32', action='store_true')
     parser.add_argument('--cpu_search', action='store_true')
 
-    args = parser.parse_args()
+    return parser
 
+
+def main(args: Namespace):
     ensure_parent_dir(args.save_ranking_to)
 
     index_files = sorted(glob.glob(args.passage_reps))
@@ -169,4 +172,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    args = get_parser().parse_args()
+    main(args)
