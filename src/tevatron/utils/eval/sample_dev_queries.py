@@ -27,9 +27,14 @@ Usage:
 """
 
 import argparse
+import logging
 import os
+import random
+from collections import defaultdict
 
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         "--num_queries",
         required=True,
         type=float,
-        help="Number of dev queries to sample per group if applicable. Passing a float picks a % of each group.",
+        help="Number of unique dev queries to sample per group if applicable. Passing a float picks a fraction of each group's unique queries.",
     )
     p.add_argument(
         "--output_dir",
@@ -72,10 +77,105 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def split_by_query_id(
+    dataset: Dataset, num_queries: float, seed: int, group_column: str | None = None
+) -> DatasetDict:
+    """Split rows so every query id belongs entirely to train or test.
+    This covers the case where duplicate query ids are present, and they contain the same textual query
+    (RLHN case)
+
+    If `group_column` is given, the split unit is `(group_column, query_id)`, so
+    the same query can still be split independently across different groups.
+    """
+
+    if group_column is not None:
+        units = list(zip(dataset[group_column], dataset["query_id"]))
+    else:
+        units = list(dataset["query_id"])
+
+    unit_to_indices = defaultdict(list)
+    for index, unit in enumerate(units):
+        unit_to_indices[unit].append(index)
+
+    unique_units = list(unit_to_indices)
+    if isinstance(num_queries, float) and not num_queries.is_integer():
+        count = int(num_queries * len(unique_units))
+    else:
+        count = int(num_queries)
+
+    if count < 1:
+        raise ValueError("num_queries must select at least one query")
+    if count > len(unique_units):
+        raise ValueError(
+            f"Requested {count} queries but only found {len(unique_units)} unique queries"
+        )
+
+    # Split train + dev
+    dev_units = set(random.Random(seed).sample(unique_units, count))
+    dev_indices = []
+    train_indices = []
+    for unit, indices in unit_to_indices.items():
+        target = dev_indices if unit in dev_units else train_indices
+        target.extend(indices)
+
+    dev_indices.sort()
+    train_indices.sort()
+    return DatasetDict(
+        {
+            "train": dataset.select(train_indices),
+            "test": dataset.select(dev_indices),
+        }
+    )
+
+
+def _merge_passages(rows: list[dict], field: str) -> list[dict]:
+    seen = set()
+    merged = []
+    for row in rows:
+        for passage in row.get(field, []):
+            key = passage.get("docid")
+            if key is None:
+                key = (passage.get("title"), passage.get("text"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(passage)
+    return merged
+
+
+def merge_query_rows(dataset: Dataset, group_column: str | None = None) -> Dataset:
+    """Merge rows with the same `(group, query_id)` into one dev query row."""
+
+    groups = {}
+    order = []
+    for row in dataset:
+        key = (
+            (row[group_column], row["query_id"])
+            if group_column is not None
+            else row["query_id"]
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+
+    merged_rows = []
+    for key in order:
+        rows = groups[key]
+        base = dict(rows[0])
+        if any(row["query"] != base["query"] for row in rows[1:]):
+            raise ValueError(f"query_id {key!r} has multiple query texts")
+        base["positive_passages"] = _merge_passages(rows, "positive_passages")
+        base["negative_passages"] = _merge_passages(rows, "negative_passages")
+        merged_rows.append(base)
+
+    return Dataset.from_list(merged_rows, features=dataset.features)
+
+
 def balance_split_dataset(
     dataset: Dataset, group_column: str, num_queries: float, seed: int
 ) -> dict[str, DatasetDict]:
-    "Splits a dataset, picking `num_queries` per subset. Returns one DatasetDict per subset"
+    "Splits a dataset, picking `num_queries` unique queries per subset."
 
     mapper = dataset.features[group_column].int2str
     unique_labels = dataset.unique(group_column)
@@ -83,31 +183,19 @@ def balance_split_dataset(
 
     for label in unique_labels:
         class_subset = dataset.filter(lambda x: x[group_column] == label)
-
-        # Resolve num_queries
-        if not num_queries.is_integer():
-            label_num_queries = num_queries * len(class_subset)
-        else:
-            label_num_queries = num_queries
-
-        label_num_queries = int(label_num_queries)
-
-        if len(class_subset) < label_num_queries:
-            raise ValueError(
-                f"Label {label} only has {len(class_subset)} instances, which is less than requested {num_queries}."
-            )
-
-        class_split = class_subset.train_test_split(
-            test_size=label_num_queries, seed=seed
+        subsets[mapper(label)] = split_by_query_id(
+            class_subset, num_queries, seed, group_column=group_column
         )
-
-        subsets[mapper(label)] = class_split
 
     return subsets
 
 
-def save_test_query_dataset(dataset: DatasetDict, path: str):
-    dev_dict = DatasetDict({"test": dataset["test"]})
+def save_test_query_dataset(
+    dataset: DatasetDict, path: str, group_column: str | None = None
+):
+    dev_dict = DatasetDict(
+        {"test": merge_query_rows(dataset["test"], group_column=group_column)}
+    )
     dev_dict.save_to_disk(path)
 
 
@@ -117,6 +205,11 @@ def save_train_query_dataset(dataset: Dataset, path: str):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
     args = parse_args()
 
     dataset = load_dataset(
@@ -136,9 +229,11 @@ if __name__ == "__main__":
         # Save one dataset per group
         for subset_name, dataset_dict in separated.items():
             group_name = os.path.join(dev_subset_dir, subset_name)
-            save_test_query_dataset(dataset_dict, group_name)
+            save_test_query_dataset(
+                dataset_dict, group_name, group_column=args.group_column
+            )
 
-            print(f"Saved '{subset_name}'")
+            logger.info("Saved '%s'", subset_name)
 
         # Save a single train set
         save_train_query_dataset(
@@ -147,13 +242,8 @@ if __name__ == "__main__":
         )
 
     else:
-        num_queries = int(
-            args.num_queries
-            if args.num_queries.is_integer()
-            else len(dataset[args.dataset_split]) * args.num_queries
-        )
-        separated = dataset[args.dataset_split].train_test_split(
-            test_size=num_queries, seed=args.seed
+        separated = split_by_query_id(
+            dataset[args.dataset_split], args.num_queries, args.seed
         )
 
         save_test_query_dataset(separated, dev_subset_dir)

@@ -12,7 +12,9 @@ Everything is implemented on Tevatron's own encode/search/score primitives:
 | encode | [`tevatron.retriever.driver.encode.encode`](../src/tevatron/retriever/driver/encode.py) |
 | index + search | [`tevatron.retriever.searcher.FaissFlatSearcher`](../src/tevatron/retriever/searcher.py) |
 | metrics | [`tevatron.eval.metrics.score`](../src/tevatron/eval/metrics.py) |
-| evaluator | [`tevatron.retriever.driver.validate`](../src/tevatron/retriever/driver/validate.py) |
+| evaluator | [`tevatron.retriever.checkpoint_validation`](../src/tevatron/retriever/checkpoint_validation.py) |
+| CLI | [`tevatron.retriever.driver.validate`](../src/tevatron/retriever/driver/validate.py) |
+| trainer hook | [`tevatron.retriever.validate_callback`](../src/tevatron/retriever/validate_callback.py) |
 
 There are two delivery modes, backed by the same evaluator:
 

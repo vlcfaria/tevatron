@@ -32,6 +32,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import pickle
 from argparse import ArgumentParser, Namespace
@@ -58,6 +59,16 @@ from tevatron.utils.eval.dedup_methods import (
     build_resolver,
     normalize_text,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def configure_logging():
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
 
 
 @dataclass
@@ -126,9 +137,10 @@ def encode_worker(
 ):
     """Encode the given corpus shard with a single gpu"""
 
+    configure_logging()
     torch.cuda.set_device(rank)
     device = torch.device(f"cuda:{rank}")
-    print(f"[Process {rank}] Initialized on device: {device}")
+    logger.info("[Process %d] Initialized on device: %s", rank, device)
 
     data_args = (
         output.get_query_data_args(data_args)
@@ -137,10 +149,13 @@ def encode_worker(
     )
 
     if os.path.exists(data_args.encode_output_path):
-        print(f"Skipping encoding {data_args.encode_output_path}: File already exists.")
+        logger.info(
+            "Skipping encoding %s: File already exists.",
+            data_args.encode_output_path,
+        )
         return
 
-    print(data_args)
+    logger.info("%s", data_args)
 
     main_encode(
         model_args, data_args, training_args, device=torch.device("cuda", rank)
@@ -159,7 +174,7 @@ def encode_dataset(
     """
     num_proc = torch.cuda.device_count()
 
-    print("Encoding Corpus")
+    logger.info("Encoding Corpus")
     mp.spawn(
         fn=encode_worker,
         args=(num_proc, model_args, data_args, training_args, output, False),
@@ -167,7 +182,7 @@ def encode_dataset(
         join=True,
     )
 
-    print("Encoding Queries")
+    logger.info("Encoding Queries")
     mp.spawn(
         fn=encode_worker,
         args=(1, model_args, data_args, training_args, output, True),
@@ -184,7 +199,7 @@ def search_dataset(
     output_dir = output.get_rank_output(search_args.save_text)
 
     if os.path.exists(output_dir):
-        print(f"Skipping search: {output_dir} already exists")
+        logger.info("Skipping search: %s already exists", output_dir)
         return output_dir
 
     search_args.passage_reps = str(output.get_passage_reps())
@@ -273,29 +288,42 @@ def build_dev_corpus(
     # Dedup corpus passages from train set
     filtered_corpus = corpus.encode_data.filter(keep, load_from_cache_file=False)
 
-    # Print stats
-    print(f"[{dataset.dataset.name}] dedup={config.method}/{config.action}")
+    # Log stats
+    logger.info(
+        "[%s] dedup=%s/%s",
+        dataset.dataset.name,
+        config.method,
+        config.action,
+    )
     for method in config.methods:
-        print(
-            f"  {method.method}: {resolver.match_counts[method.method]}/"
-            f"{stats['corpus']} corpus docs dropped, "
-            f"{len(resolver.matched_by_method[method.method])}/"
-            f"{len(resolver.dev_texts)} dev passages covered"
+        logger.info(
+            "  %s: %d/%d corpus docs dropped, %d/%d dev passages covered",
+            method.method,
+            resolver.match_counts[method.method],
+            stats["corpus"],
+            len(resolver.matched_by_method[method.method]),
+            len(resolver.dev_texts),
         )
 
     for docid, match in examples:
-        print(
-            f"  {docid} <- dev[{match.dev_index}] "
-            f"{match.method} score={match.score:.3f}"
+        logger.info(
+            "  %s <- dev[%d] %s score=%.3f",
+            docid,
+            match.dev_index,
+            match.method,
+            match.score,
         )
 
     corpus_total = stats["corpus"] or 1
     dev_total = len(resolver.dev_texts) or 1
-    print(
-        f"  total: {stats['matched']}/{stats['corpus']} corpus docs dropped "
-        f"({stats['matched'] / corpus_total:.1%}), "
-        f"{len(resolver.matched)}/{len(resolver.dev_texts)} dev passages covered "
-        f"({len(resolver.matched) / dev_total:.1%})"
+    logger.info(
+        "  total: %d/%d corpus docs dropped (%.1f%%), %d/%d dev passages covered (%.1f%%)",
+        stats["matched"],
+        stats["corpus"],
+        stats["matched"] / corpus_total * 100,
+        len(resolver.matched),
+        len(resolver.dev_texts),
+        len(resolver.matched) / dev_total * 100,
     )
 
     # Stitch documents from train set, RLHN-style
@@ -308,8 +336,11 @@ def build_dev_corpus(
     augmented_corpus = Dataset.from_dict(passage_corpus)
     dev_corpus = concatenate_datasets([filtered_corpus, augmented_corpus])
 
-    print(
-        f"Picked {len(dev_corpus)} documents, with {len(filtered_corpus)} original documents and {len(augmented_corpus)} augmented documents"
+    logger.info(
+        "Picked %d documents, with %d original documents and %d augmented documents",
+        len(dev_corpus),
+        len(filtered_corpus),
+        len(augmented_corpus),
     )
 
     return dev_corpus, build_qrels(dev_data, assigned_map)
@@ -324,15 +355,16 @@ def main(
     encoding_cache_dir: str,
     inject_positives_only: bool = False,
 ):
+    configure_logging()
     num_gpus = torch.cuda.device_count()
     os.makedirs(training_args.output_dir, exist_ok=True)
 
-    print(f"Encoding with {num_gpus} GPUs")
+    logger.info("Encoding with %d GPUs", num_gpus)
 
     for d in datasets:
         output = DatasetOutput(d, encoding_cache_dir)
 
-        print(f"Encoding {d.name}")
+        logger.info("Encoding %s", d.name)
         encode_dataset(
             model_args,
             data_args,
@@ -340,7 +372,7 @@ def main(
             output=output,
         )
 
-        print(f"Searching {d.name}")
+        logger.info("Searching %s", d.name)
         ranking_file = search_dataset(search_args, output)
 
         # Extract docids from ranking files
@@ -369,7 +401,7 @@ def main(
             f"qrels reference docs missing from corpus: {sorted(missing)[:5]}"
         )
 
-        print(f"Wrote {len(qrels)} qrels to {qrels_path}")
+        logger.info("Wrote %d qrels to %s", len(qrels), qrels_path)
 
 
 def parse_dev_corpus_args():

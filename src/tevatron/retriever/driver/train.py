@@ -112,7 +112,8 @@ def main():
     train_dataset.set_trainer(trainer)
 
     if validate_args.validate_mode != 'off':
-        from tevatron.retriever.driver.validate import ValidateCallback, check_validate_args
+        from tevatron.retriever.checkpoint_validation import check_validate_args
+        from tevatron.retriever.validate_callback import ValidateCallback
         check_validate_args(validate_args)
         validate_callback = ValidateCallback(data_args, validate_args, tokenizer)
         trainer.add_callback(validate_callback)
