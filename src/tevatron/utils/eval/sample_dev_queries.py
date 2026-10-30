@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         help="Number of unique dev queries to sample per group if applicable. Passing a float picks a fraction of each group's unique queries.",
     )
     p.add_argument(
+        "--num_max_queries",
+        type=int,
+        help="Number of maximum queries per subset. Useful when passing a float into num_queries, allowing to select min(num_queries*len(queries),num_max_queries).",
+    )
+    p.add_argument(
         "--output_dir",
         required=True,
         help="Output directory of dataset split preparation",
@@ -78,7 +83,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def split_by_query_id(
-    dataset: Dataset, num_queries: float, seed: int, group_column: str | None = None
+    dataset: Dataset,
+    num_queries: float,
+    seed: int,
+    group_column: str | None = None,
+    num_max_queries: int | None = None,
 ) -> DatasetDict:
     """Split rows so every query id belongs entirely to train or test.
     This covers the case where duplicate query ids are present, and they contain the same textual query
@@ -102,6 +111,9 @@ def split_by_query_id(
         count = int(num_queries * len(unique_units))
     else:
         count = int(num_queries)
+
+    if num_max_queries:
+        count = min(count, num_max_queries)
 
     if count < 1:
         raise ValueError("num_queries must select at least one query")
@@ -173,7 +185,11 @@ def merge_query_rows(dataset: Dataset, group_column: str | None = None) -> Datas
 
 
 def balance_split_dataset(
-    dataset: Dataset, group_column: str, num_queries: float, seed: int
+    dataset: Dataset,
+    group_column: str,
+    num_queries: float,
+    seed: int,
+    num_max_queries: int | None = None,
 ) -> dict[str, DatasetDict]:
     "Splits a dataset, picking `num_queries` unique queries per subset."
 
@@ -183,7 +199,11 @@ def balance_split_dataset(
     for label in unique_labels:
         class_subset = dataset.filter(lambda x: x[group_column] == label)
         subsets[str(label)] = split_by_query_id(
-            class_subset, num_queries, seed, group_column=group_column
+            class_subset,
+            num_queries,
+            seed,
+            group_column=group_column,
+            num_max_queries=num_max_queries,
         )
 
     return subsets
@@ -221,7 +241,11 @@ if __name__ == "__main__":
 
     if args.group_by:
         separated = balance_split_dataset(
-            dataset[args.dataset_split], args.group_column, args.num_queries, args.seed
+            dataset[args.dataset_split],
+            args.group_column,
+            args.num_queries,
+            args.seed,
+            args.num_max_queries,
         )
 
         # Save one dataset per group
