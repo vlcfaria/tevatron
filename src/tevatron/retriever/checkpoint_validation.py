@@ -94,6 +94,7 @@ def evaluate_group(
             data_args, validate_args, validate_args.eval_query_dir, group, True
         ),
         training_args,
+        verbose=validate_args.validate_verbose,
     )
     p_reps, p_ids = encode(
         model,
@@ -102,6 +103,7 @@ def evaluate_group(
             data_args, validate_args, validate_args.eval_corpus_dir, group, False
         ),
         training_args,
+        verbose=validate_args.validate_verbose,
     )
 
     searcher = FaissFlatSearcher(p_reps)
