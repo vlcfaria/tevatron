@@ -15,8 +15,11 @@ from transformers import (
     HfArgumentParser,
 )
 
-from tevatron.retriever.arguments import ModelArguments, DataArguments, \
-    TevatronTrainingArguments as TrainingArguments
+from tevatron.retriever.arguments import (
+    ModelArguments,
+    DataArguments,
+    TevatronTrainingArguments as TrainingArguments,
+)
 from tevatron.retriever.dataset import EncodeDataset
 from tevatron.utils.io import ensure_parent_dir
 from tevatron.retriever.collator import EncodeCollator
@@ -25,7 +28,14 @@ from tevatron.retriever.modeling import EncoderOutput, DenseModel
 logger = logging.getLogger(__name__)
 
 
-def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingArguments, device=None):
+def encode(
+    model,
+    tokenizer,
+    data_args: DataArguments,
+    training_args: TrainingArguments,
+    device=None,
+    verbose=True,
+):
     """Encode EncodeDataset(data_args) in-memory; returns (reps, lookup_ids)."""
     device = device if device is not None else training_args.device
     encode_dataset = EncodeDataset(
@@ -50,9 +60,13 @@ def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingAr
     model = model.to(device)
     model.eval()
 
-    for (batch_ids, batch) in tqdm(encode_loader):
+    for batch_ids, batch in tqdm(encode_loader) if verbose else encode_loader:
         lookup_indices.extend(batch_ids)
-        with torch.amp.autocast('cuda') if training_args.fp16 or training_args.bf16 else nullcontext():
+        with (
+            torch.amp.autocast("cuda")
+            if training_args.fp16 or training_args.bf16
+            else nullcontext()
+        ):
             with torch.no_grad():
                 for k, v in batch.items():
                     batch[k] = v.to(device)
@@ -66,9 +80,14 @@ def encode(model, tokenizer, data_args: DataArguments, training_args: TrainingAr
     return np.concatenate(encoded), lookup_indices
 
 
-def main(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments, device=None):
+def main(
+    model_args: ModelArguments,
+    data_args: DataArguments,
+    training_args: TrainingArguments,
+    device=None,
+):
     if device is None and (training_args.local_rank > 0 or training_args.n_gpu > 1):
-        raise NotImplementedError('Multi-GPU encoding is not supported.')
+        raise NotImplementedError("Multi-GPU encoding is not supported.")
 
     if data_args.encode_output_path:
         ensure_parent_dir(data_args.encode_output_path)
@@ -80,18 +99,19 @@ def main(model_args: ModelArguments, data_args: DataArguments, training_args: Tr
         level=logging.INFO if training_args.local_rank in [-1, 0] else logging.WARN,
     )
 
-
     tokenizer = AutoTokenizer.from_pretrained(
-        model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
-        cache_dir=model_args.cache_dir
+        model_args.tokenizer_name
+        if model_args.tokenizer_name
+        else model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    if data_args.padding_side == 'right':
-        tokenizer.padding_side = 'right'
+    if data_args.padding_side == "right":
+        tokenizer.padding_side = "right"
     else:
-        tokenizer.padding_side = 'left'
+        tokenizer.padding_side = "left"
 
     if training_args.bf16:
         torch_dtype = torch.bfloat16
@@ -99,7 +119,7 @@ def main(model_args: ModelArguments, data_args: DataArguments, training_args: Tr
         torch_dtype = torch.float16
     else:
         torch_dtype = torch.float32
-    
+
     model = DenseModel.load(
         model_args.model_name_or_path,
         pooling=model_args.pooling,
@@ -110,10 +130,12 @@ def main(model_args: ModelArguments, data_args: DataArguments, training_args: Tr
         attn_implementation=model_args.attn_implementation,
     )
 
-    encoded, lookup_indices = encode(model, tokenizer, data_args, training_args, device=device)
+    encoded, lookup_indices = encode(
+        model, tokenizer, data_args, training_args, device=device
+    )
 
     if data_args.encode_output_path:
-        with open(data_args.encode_output_path, 'wb') as f:
+        with open(data_args.encode_output_path, "wb") as f:
             pickle.dump((encoded, lookup_indices), f)
 
     return encoded, lookup_indices
@@ -122,7 +144,9 @@ def main(model_args: ModelArguments, data_args: DataArguments, training_args: Tr
 if __name__ == "__main__":
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args = parser.parse_json_file(
+            json_file=os.path.abspath(sys.argv[1])
+        )
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
         model_args: ModelArguments
